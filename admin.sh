@@ -17,11 +17,18 @@ if [ -z "$PARTITION" ]; then
     for dev in $(lsblk -l -o NAME,FSTYPE | awk '$2=="ntfs"{print $1}'); do
         p="/dev/$dev"
         [ ! -b "$p" ] && continue
-        if ntfsls -f "$p" Windows/System32/config/SAM >/dev/null 2>&1; then
-            PARTITION="$p"
-            break
+        mkdir -p /tmp/winprobe
+        umount /tmp/winprobe 2>/dev/null || true
+        if mount -t ntfs-3g -o remove_hiberfile,ro "$p" /tmp/winprobe 2>/dev/null; then
+            if [ -f /tmp/winprobe/Windows/System32/config/SAM ]; then
+                PARTITION="$p"
+                umount /tmp/winprobe 2>/dev/null || true
+                break
+            fi
+            umount /tmp/winprobe 2>/dev/null || true
         fi
     done
+    rmdir /tmp/winprobe 2>/dev/null || true
 fi
 
 if [ -z "$PARTITION" ] || [ ! -b "$PARTITION" ]; then
