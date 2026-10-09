@@ -12,33 +12,51 @@ fi
 echo "[*] Ставлю зависимости..."
 apt-get update -qq && apt-get install -y -qq chntpw ntfs-3g
 
-# --- Освобождение раздела ---
+# --- Освобождение раздела (только для целевого!) ---
 cleanup_partition() {
-    fuser -km "$1" 2>/dev/null || true
-    umount "$1" 2>/dev/null || true
+    local dev="$1"
+    fuser -km "$dev" 2>/dev/null || true
+    umount "$dev" 2>/dev/null || true
     for m in /media/ubuntu/*; do
         [ -d "$m" ] && mountpoint -q "$m" && umount "$m" 2>/dev/null || true
     done
-    ntfsfix "$1" >/dev/null 2>&1 || true
 }
 
-# --- Автопоиск раздела, если не указан ---
+# --- Автопоиск раздела (безопасный, только чтение) ---
 find_partition() {
+    local probe="/tmp/winprobe"
+    mkdir -p "$probe"
+
     for dev in $(lsblk -l -o NAME,FSTYPE | awk '$2=="ntfs"{print $1}'); do
         p="/dev/$dev"
         [ ! -b "$p" ] && continue
-        cleanup_partition "$p"
-        mkdir -p /tmp/winprobe
-        if mount -t ntfs-3g -o remove_hiberfile,force "$p" /tmp/winprobe 2>/dev/null; then
-            if [ -f /tmp/winprobe/Windows/System32/config/SAM ]; then
-                umount /tmp/winprobe 2>/dev/null || true
-                echo "$p"
-                return 0
-            fi
-            umount /tmp/winprobe 2>/dev/null || true
+
+        local cur=$(lsblk -no MOUNTPOINT "$p" | head -n 1)
+        local check_dir=""
+        local external=false
+
+        if [ -n "$cur" ]; then
+            check_dir="$cur"
+            external=true
+        else
+            mount -t ntfs-3g -o ro,force "$p" "$probe" 2>/dev/null || continue
+            check_dir="$probe"
         fi
+
+        # Надежная регистронезависимая проверка через find
+        local found_sam=$(find "$check_dir" -maxdepth 4 -type f -iregex ".*/windows/system32/config/sam" 2>/dev/null | head -n 1)
+
+        if [ -n "$found_sam" ]; then
+            [ "$external" = false ] && umount "$probe" 2>/dev/null
+            rmdir "$probe" 2>/dev/null
+            echo "$p"
+            return 0
+        fi
+
+        [ "$external" = false ] && umount "$probe" 2>/dev/null
     done
-    rmdir /tmp/winprobe 2>/dev/null || true
+
+    rmdir "$probe" 2>/dev/null
     return 1
 }
 
@@ -55,27 +73,32 @@ fi
 
 echo "[*] Раздел: $PARTITION"
 
-# --- Монтирование ---
+# --- Подготовка выбранного раздела ---
 cleanup_partition "$PARTITION"
+ntfsfix "$PARTITION" >/dev/null 2>&1 || true
 mkdir -p "$MOUNT_POINT"
 
 mount -t ntfs-3g -o remove_hiberfile,force "$PARTITION" "$MOUNT_POINT" 2>/dev/null \
     || mount -t ntfs-3g -o rw "$PARTITION" "$MOUNT_POINT" \
     || { echo "[!] Не удалось примонтировать $PARTITION"; exit 1; }
 
-CONFIG_DIR="$MOUNT_POINT/Windows/System32/config"
-if [ ! -f "$CONFIG_DIR/SAM" ]; then
-    echo "[!] Файл SAM не найден в $CONFIG_DIR"
+# --- Поиск SAM (регистронезависимо) ---
+SAM_FILE=$(find "$MOUNT_POINT" -maxdepth 4 -type f -iregex ".*/windows/system32/config/sam" 2>/dev/null | head -n 1)
+
+if [ -z "$SAM_FILE" ] || [ ! -f "$SAM_FILE" ]; then
+    echo "[!] Файл SAM не найден в $MOUNT_POINT"
     umount "$MOUNT_POINT" 2>/dev/null || true
     exit 1
 fi
+
+CONFIG_DIR=$(dirname "$SAM_FILE")
 
 echo "=========================================================="
 echo " Раздел готов. Сейчас запустится chntpw."
 
 exec < /dev/tty
 cd "$CONFIG_DIR"
-chntpw -i SAM
+chntpw -i "$(basename "$SAM_FILE")"
 
 # --- Завершение ---
 cd /
