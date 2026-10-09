@@ -8,22 +8,20 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+# --- Зависимости ---
+echo "[*] Ставлю зависимости..."
+apt-get update -qq && apt-get install -y -qq chntpw ntfs-3g
+
 # --- Автопоиск раздела, если не указан ---
 if [ -z "$PARTITION" ]; then
     for dev in $(lsblk -l -o NAME,FSTYPE | awk '$2=="ntfs"{print $1}'); do
         p="/dev/$dev"
         [ ! -b "$p" ] && continue
-        mkdir -p /tmp/winprobe
-        if mount -t ntfs-3g -o ro "$p" /tmp/winprobe 2>/dev/null; then
-            if [ -d /tmp/winprobe/Windows/System32/config ]; then
-                PARTITION="$p"
-                umount /tmp/winprobe
-                break
-            fi
-            umount /tmp/winprobe
+        if ntfsls -f "$p" Windows/System32/config/SAM >/dev/null 2>&1; then
+            PARTITION="$p"
+            break
         fi
     done
-    rmdir /tmp/winprobe 2>/dev/null || true
 fi
 
 if [ -z "$PARTITION" ] || [ ! -b "$PARTITION" ]; then
@@ -33,10 +31,6 @@ if [ -z "$PARTITION" ] || [ ! -b "$PARTITION" ]; then
 fi
 
 echo "[*] Раздел: $PARTITION"
-
-# --- Зависимости ---
-echo "[*] Ставлю зависимости..."
-apt-get update -qq && apt-get install -y -qq chntpw ntfs-3g
 
 # --- Отмонтирование старых монтирований ---
 umount "$PARTITION" 2>/dev/null || true
